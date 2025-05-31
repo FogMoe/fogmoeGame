@@ -2,12 +2,9 @@
 动画管理模块
 """
 
-import random
 import pygame
 from models.constants import (
-    DICE_ANIMATION_FRAMES, PLAYER_MOVE_SPEED, 
-    WHITE, BLACK, GOLD, WINDOW_WIDTH, WINDOW_HEIGHT,
-    DARK_GREEN, DARK_RED
+    WHITE, BLACK, WINDOW_WIDTH, WINDOW_HEIGHT, GRID_SIZE
 )
 
 class AnimationManager:
@@ -15,22 +12,13 @@ class AnimationManager:
     
     def __init__(self):
         """初始化动画管理器"""
-        # 骰子动画相关
-        self.dice_rolling = False
-        self.dice_roll_frame = 0
-        
         # 玩家移动动画相关
         self.player_moving = False
-        self.move_start_pos = (0, 0)
-        self.move_end_pos = (0, 0)
-        self.move_progress = 0
         self.moving_player_id = -1
-        
-        # 格子效果骰子动画
-        self.effect_dice_rolling = False
-        self.effect_dice_frame = 0
-        self.effect_type = ''
-        self.effect_player = None
+        self.move_path = []  # 存储移动路径的格子位置列表
+        self.current_step = 0  # 当前移动到路径中的第几步
+        self.step_progress = 0.0  # 当前步骤的进度 (0.0 到 1.0)
+        self.move_speed = 0.02  # 每步移动的速度（降低速度，延长动画时间）
         
         # 创建骰子贴图
         self.create_dice_textures()
@@ -58,107 +46,87 @@ class AnimationManager:
             
             self.dice_surfaces.append(dice_surface)
     
-    def start_dice_roll(self):
-        """开始骰子滚动动画"""
-        self.dice_rolling = True
-        self.dice_roll_frame = 0
-    
-    def start_effect_dice_roll(self, effect_type, player):
-        """开始格子效果骰子动画"""
-        self.effect_dice_rolling = True
-        self.effect_dice_frame = 0
-        self.effect_type = effect_type
-        self.effect_player = player
-    
-    def start_player_move_animation(self, player_id, start_pos, end_pos):
-        """开始玩家移动动画"""
+    def start_player_move_animation(self, player_id, start_position, end_position, dice_steps):
+        """
+        开始玩家移动动画
+        
+        Args:
+            player_id (int): 移动的玩家ID
+            start_position (int): 起始格子位置
+            end_position (int): 目标格子位置  
+            dice_steps (int): 骰子点数（移动步数）
+        """
         self.player_moving = True
         self.moving_player_id = player_id
-        self.move_start_pos = start_pos
-        self.move_end_pos = end_pos
-        self.move_progress = 0
-    
-    def update_dice_animation(self):
-        """更新骰子动画"""
-        if self.dice_rolling:
-            self.dice_roll_frame += 1
-            if self.dice_roll_frame >= DICE_ANIMATION_FRAMES:
-                self.dice_rolling = False
-                self.dice_roll_frame = 0
-                return True  # 动画完成
-        return False
+        self.current_step = 0
+        self.step_progress = 0.0
+        
+        # 计算移动路径（按顺序经过的所有格子）
+        self.move_path = []
+        current_pos = start_position
+        
+        for step in range(dice_steps + 1):  # +1 包括起始位置
+            self.move_path.append(current_pos)
+            if step < dice_steps:  # 不是最后一步
+                current_pos = (current_pos + 1) % GRID_SIZE
     
     def update_player_move_animation(self):
         """更新玩家移动动画"""
         if self.player_moving:
-            self.move_progress += PLAYER_MOVE_SPEED * 0.01
-            if self.move_progress >= 1.0:
-                self.player_moving = False
-                self.move_progress = 0
-                return True  # 动画完成
+            self.step_progress += self.move_speed
+            
+            if self.step_progress >= 1.0:
+                # 当前步骤完成，移动到下一步
+                self.current_step += 1
+                self.step_progress = 0.0
+                
+                if self.current_step >= len(self.move_path) - 1:
+                    # 所有步骤完成
+                    self.player_moving = False
+                    self.current_step = 0
+                    self.step_progress = 0.0
+                    self.move_path = []
+                    return True  # 动画完成
         return False
     
-    def update_effect_dice_animation(self):
-        """更新格子效果骰子动画"""
-        if self.effect_dice_rolling:
-            self.effect_dice_frame += 1
-            if self.effect_dice_frame >= DICE_ANIMATION_FRAMES:
-                self.effect_dice_rolling = False
-                self.effect_dice_frame = 0
-                return True  # 动画完成
-        return False
-    
-    def get_animated_player_position(self, player_id, cell_positions):
+    def get_animated_player_position(self, player_id, board):
         """获取玩家的动画位置"""
         if self.player_moving and self.moving_player_id == player_id:
-            # 插值计算当前位置
-            start_x, start_y = self.move_start_pos
-            end_x, end_y = self.move_end_pos
-            current_x = start_x + (end_x - start_x) * self.move_progress
-            current_y = start_y + (end_y - start_y) * self.move_progress
-            return (int(current_x), int(current_y))
-        else:
-            return cell_positions[player_id] if player_id < len(cell_positions) else (0, 0)
-    
-    def draw_dice_animation(self, screen, font, dice_result):
-        """绘制骰子动画"""
-        if self.dice_rolling:
-            # 在屏幕中央显示滚动的骰子
-            dice_x = WINDOW_WIDTH // 2 - 20
-            dice_y = WINDOW_HEIGHT // 2 - 20
-            
-            # 随机显示不同的骰子面来模拟滚动
-            current_dice = random.randint(0, 5)
-            screen.blit(self.dice_surfaces[current_dice], (dice_x, dice_y))
-            
-            # 显示提示文字
-            text = font.render("投骰子移动！", True, BLACK)
-            text_rect = text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 60))
-            screen.blit(text, text_rect)
-            
-        elif self.effect_dice_rolling:
-            # 显示格子效果骰子动画
-            dice_x = WINDOW_WIDTH // 2 - 20
-            dice_y = WINDOW_HEIGHT // 2 - 20
-            
-            # 随机显示不同的骰子面来模拟滚动
-            current_dice = random.randint(0, 5)
-            screen.blit(self.dice_surfaces[current_dice], (dice_x, dice_y))
-            
-            # 显示不同的提示文字
-            if self.effect_type == 'reward':
-                text = font.render("投骰子获得金币！", True, DARK_GREEN)
+            # 获取当前步骤的起始和结束格子位置
+            if self.current_step < len(self.move_path) - 1:
+                current_cell = self.move_path[self.current_step]
+                next_cell = self.move_path[self.current_step + 1]
+                
+                # 获取两个格子的屏幕坐标
+                start_x, start_y = board.get_cell_position(current_cell)
+                end_x, end_y = board.get_cell_position(next_cell)
+                
+                # 插值计算当前位置
+                current_x = start_x + (end_x - start_x) * self.step_progress
+                current_y = start_y + (end_y - start_y) * self.step_progress
+                return (int(current_x), int(current_y))
             else:
-                text = font.render("投骰子失去金币！", True, DARK_RED)
-            text_rect = text.get_rect(center=(WINDOW_WIDTH // 2, WINDOW_HEIGHT // 2 + 60))
-            screen.blit(text, text_rect)
+                # 已经到达最后一格
+                final_cell = self.move_path[-1] if self.move_path else 0
+                return board.get_cell_position(final_cell)
+        else:
+            # 非移动中的玩家，返回正常位置
+            return (0, 0)  # 这里会在调用处处理
+    
+    def draw_dice_result(self, screen, font, dice_result, effect_dice_result=0):
+        """直接绘制骰子结果，无动画"""
+        # 如果有格子效果骰子结果，优先显示
+        if effect_dice_result > 0:
+            dice_x = WINDOW_WIDTH // 2 - 20
+            dice_y = WINDOW_HEIGHT // 2 - 20
+            screen.blit(self.dice_surfaces[effect_dice_result - 1], (dice_x, dice_y))
             
         elif dice_result > 0:
-            # 显示最终的骰子结果
+            # 显示移动骰子结果
             dice_x = WINDOW_WIDTH // 2 - 20
             dice_y = WINDOW_HEIGHT // 2 - 20
             screen.blit(self.dice_surfaces[dice_result - 1], (dice_x, dice_y))
     
     def is_any_animation_running(self):
         """检查是否有任何动画正在运行"""
-        return self.dice_rolling or self.player_moving or self.effect_dice_rolling 
+        return self.player_moving 

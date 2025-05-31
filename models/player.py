@@ -16,8 +16,10 @@ class Player:
             is_ai (bool): 是否为AI玩家
         """
         self.id = player_id
-        self.money = 100
-        self.position = player_id  # 从自己的home格开始
+        self.money = 0
+        # 玩家从自己的home格开始：0, 7, 14, 21
+        home_positions = [0, 7, 14, 21]
+        self.position = home_positions[player_id]
         self.is_ai = is_ai
         self.color = PLAYER_COLORS[player_id]
         
@@ -55,7 +57,8 @@ class Player:
         Returns:
             bool: 是否满足获胜条件
         """
-        return self.money >= WINNING_MONEY and self.position == self.id
+        home_positions = [0, 7, 14, 21]
+        return self.money >= WINNING_MONEY and self.position == home_positions[self.id]
     
     def get_player_type_name(self):
         """

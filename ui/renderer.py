@@ -5,7 +5,8 @@
 import pygame
 from models.constants import (
     WHITE, BLACK, RED, GREEN, GRAY, LIGHT_BLUE, GOLD,
-    HOME_COLORS, CELL_SIZE, WINDOW_WIDTH, WINDOW_HEIGHT
+    HOME_COLORS, CELL_SIZE, WINDOW_WIDTH, WINDOW_HEIGHT,
+    REWARD_COLOR, DISCARD_COLOR
 )
 
 class Renderer:
@@ -54,9 +55,9 @@ class Renderer:
             if cell.is_home_cell():
                 color = HOME_COLORS[cell.owner]
             elif cell.is_reward_cell():
-                color = GREEN
+                color = REWARD_COLOR
             elif cell.is_penalty_cell():
-                color = RED
+                color = DISCARD_COLOR
             else:
                 color = GRAY
             
@@ -77,7 +78,7 @@ class Renderer:
             elif cell.is_reward_cell():
                 type_text = "奖励"
             elif cell.is_penalty_cell():
-                type_text = "惩罚"
+                type_text = "丢弃"
             else:
                 type_text = "普通"
             
@@ -97,8 +98,7 @@ class Renderer:
         for i, player in enumerate(players):
             # 获取玩家当前位置（可能是动画中的位置）
             if animation_manager.player_moving and animation_manager.moving_player_id == i:
-                pos_x, pos_y = animation_manager.get_animated_player_position(i, 
-                    [board.get_cell_position(p.position) for p in players])
+                pos_x, pos_y = animation_manager.get_animated_player_position(i, board)
             else:
                 pos_x, pos_y = board.get_cell_position(player.position)
             
@@ -142,8 +142,14 @@ class Renderer:
         
         # 绘制骰子结果
         if game_logic.dice_result > 0:
-            dice_text = f"骰子点数: {game_logic.dice_result}"
+            dice_text = f"移动骰子点数: {game_logic.dice_result}"
             rendered_text = self.font.render(dice_text, True, BLACK)
+            self.screen.blit(rendered_text, (10, y_offset + 20))
+            y_offset += 25
+        
+        if game_logic.effect_dice_result > 0:
+            effect_dice_text = f"效果骰子点数: {game_logic.effect_dice_result}"
+            rendered_text = self.font.render(effect_dice_text, True, BLACK)
             self.screen.blit(rendered_text, (10, y_offset + 20))
         
         # 绘制消息
@@ -160,6 +166,17 @@ class Renderer:
             pygame.draw.rect(self.screen, BLACK, button_rect, 2)
             
             button_text = self.font.render("重新开始", True, BLACK)
+            text_rect = button_text.get_rect(center=button_rect.center)
+            self.screen.blit(button_text, text_rect)
+            
+            return button_rect
+        elif game_logic.waiting_for_effect_dice and not current_player.is_ai:
+            # 只有真实玩家等待效果骰子时显示投掷按钮
+            button_rect = pygame.Rect(WINDOW_WIDTH - 150, WINDOW_HEIGHT - 60, 120, 40)
+            pygame.draw.rect(self.screen, GOLD, button_rect)
+            pygame.draw.rect(self.screen, BLACK, button_rect, 2)
+            
+            button_text = self.font.render("投骰子", True, BLACK)
             text_rect = button_text.get_rect(center=button_rect.center)
             self.screen.blit(button_text, text_rect)
             
