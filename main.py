@@ -689,9 +689,33 @@ class MonopolyGame:
     def start_server(self):
         """启动游戏服务器"""
         try:
+            # 检查是否有打包后的服务器程序
+            import os
+            
+            # 尝试不同的服务器程序路径
+            possible_server_paths = [
+                "fogmoe_game_server.exe",  # 单文件版本
+                "start_server.py",  # 开发版本
+                os.path.join("fogmoe_game_server", "fogmoe_game_server.exe"),  # 目录版本
+                os.path.join("..", "fogmoe_game_server.exe"),  # 相对路径
+            ]
+            
+            server_cmd = None
+            for path in possible_server_paths:
+                if os.path.exists(path):
+                    if path.endswith('.exe'):
+                        server_cmd = [path]
+                    else:
+                        server_cmd = [sys.executable, path]
+                    break
+            
+            if server_cmd is None:
+                # 如果都找不到，尝试使用start_server.py
+                server_cmd = [sys.executable, "start_server.py"]
+            
             # 使用subprocess启动服务器进程
             self.server_process = subprocess.Popen(
-                [sys.executable, "start_server.py"],
+                server_cmd,
                 creationflags=subprocess.CREATE_NEW_CONSOLE if sys.platform == "win32" else 0
             )
             return True
