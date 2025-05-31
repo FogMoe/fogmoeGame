@@ -156,8 +156,34 @@ class Renderer:
         message_text = self.font.render(game_logic.message, True, BLACK)
         self.screen.blit(message_text, (10, WINDOW_HEIGHT - 80))
         
-        # 绘制按钮
+        # 绘制当前状态提示
         current_player = game_logic.get_current_player()
+        current_player_name = current_player.get_player_type_name() + str(current_player.id + 1)
+        
+        if game_logic.waiting_for_effect_dice:
+            # 明确显示谁需要投掷效果骰子
+            status_text = f"等待 {current_player_name} 投掷效果骰子..."
+            status_color = GOLD
+        else:
+            # 显示当前是谁的回合
+            status_text = f"{current_player_name} 的回合"
+            status_color = BLACK
+        
+        status_rendered = self.font.render(status_text, True, status_color)
+        status_rect = status_rendered.get_rect(center=(WINDOW_WIDTH//2, WINDOW_HEIGHT - 40))
+        self.screen.blit(status_rendered, status_rect)
+        
+        # 绘制按钮
+        # 判断是否应该显示按钮
+        should_show_button = False
+        
+        # 如果是网络游戏逻辑
+        if hasattr(game_logic, 'is_local_player_turn'):
+            # 联机游戏：只有本地玩家在自己的回合才能看到按钮
+            should_show_button = game_logic.is_local_player_turn()
+        else:
+            # 单人游戏：当前玩家不是AI就显示按钮
+            should_show_button = not current_player.is_ai
         
         if game_logic.is_game_over():
             # 游戏结束时显示重新开始按钮
@@ -170,8 +196,8 @@ class Renderer:
             self.screen.blit(button_text, text_rect)
             
             return button_rect
-        elif game_logic.waiting_for_effect_dice and not current_player.is_ai:
-            # 只有真实玩家等待效果骰子时显示投掷按钮
+        elif game_logic.waiting_for_effect_dice and should_show_button:
+            # 只有本地玩家在自己的回合等待效果骰子时显示投掷按钮
             button_rect = pygame.Rect(WINDOW_WIDTH - 150, WINDOW_HEIGHT - 60, 120, 40)
             pygame.draw.rect(self.screen, GOLD, button_rect)
             pygame.draw.rect(self.screen, BLACK, button_rect, 2)
@@ -181,8 +207,8 @@ class Renderer:
             self.screen.blit(button_text, text_rect)
             
             return button_rect
-        elif not current_player.is_ai:
-            # 玩家回合显示投骰子按钮
+        elif should_show_button:
+            # 本地玩家回合显示投骰子按钮
             button_rect = pygame.Rect(WINDOW_WIDTH - 150, WINDOW_HEIGHT - 60, 120, 40)
             pygame.draw.rect(self.screen, LIGHT_BLUE, button_rect)
             pygame.draw.rect(self.screen, BLACK, button_rect, 2)

@@ -492,6 +492,19 @@ class MonopolyGame:
             button_rect = None
         
         if button_rect and button_rect.collidepoint(pos):
+            # 首先检查是否可以进行操作（联机游戏时检查是否是本地玩家回合）
+            can_act = True
+            if self.is_online_game and isinstance(self.game_logic, NetworkGameLogic):
+                can_act = self.game_logic.is_local_player_turn()
+            else:
+                # 单人游戏时，检查是否是真人玩家回合
+                current_player = self.game_logic.get_current_player()
+                can_act = not current_player.is_ai
+            
+            # 只有在可以操作时才处理点击
+            if not can_act:
+                return
+            
             if hasattr(self.game_logic, 'is_game_over') and self.game_logic.is_game_over():
                 # 游戏结束，显示结果
                 self.end_game_with_results()
@@ -500,15 +513,8 @@ class MonopolyGame:
                 self.handle_effect_dice_roll()
             elif (hasattr(self.animation_manager, 'is_any_animation_running') and 
                   not self.animation_manager.is_any_animation_running() and not self.waiting_state):
-                current_player = self.game_logic.get_current_player()
-                if not current_player.is_ai:
-                    # 联机游戏时，检查是否是本地玩家的回合
-                    if self.is_online_game and isinstance(self.game_logic, NetworkGameLogic):
-                        if self.game_logic.can_current_player_roll():
-                            self.start_player_turn()
-                    else:
-                        # 单人游戏，直接投骰子
-                        self.start_player_turn()
+                # 开始玩家回合
+                self.start_player_turn()
     
     def handle_effect_dice_roll(self):
         """处理真实玩家的效果骰子投掷"""
