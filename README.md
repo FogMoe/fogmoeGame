@@ -45,7 +45,7 @@ Click “Single Player” to begin.
 ## Project Structure
 
 ```
-Game outdated!
+Game Semi-finished outdated
 ```
 
 ## Multiplayer Details
