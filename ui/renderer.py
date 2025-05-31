@@ -131,7 +131,35 @@ class Renderer:
         y_offset = 10
         for i, player in enumerate(game_logic.players):
             player_type = player.get_player_type_name()
-            text = f"{player_type}{i + 1}: {player.money}金币"
+            
+            # 检查是否是联机游戏
+            is_network_game = hasattr(game_logic, 'is_local_player_turn')
+            
+            if not player.is_ai:
+                # 真人玩家
+                from utils.config_manager import config_manager
+                if is_network_game and hasattr(player, 'name') and player.name != config_manager.get_nickname():
+                    # 联机游戏中的其他玩家，显示他们的昵称
+                    text = f"玩家{i + 1}({player.name}): {player.money}金币"
+                else:
+                    # 本地玩家（单人游戏或联机游戏中的自己），显示配置的昵称
+                    text = f"玩家{i + 1}({config_manager.get_nickname()}): {player.money}金币"
+            else:
+                # AI玩家
+                text = f"{player_type}{i + 1}: {player.money}金币"
+            
+            # 标注本地玩家
+            is_local_player = False
+            if hasattr(game_logic, 'is_local_player_turn') and hasattr(game_logic, 'player_slot'):
+                # 联机游戏：检查是否是本地玩家槽位
+                is_local_player = (i == game_logic.player_slot)
+            else:
+                # 单人游戏：第一个非AI玩家就是本地玩家
+                is_local_player = not player.is_ai
+            
+            if is_local_player:
+                text = f"[你] {text}"
+            
             if i == game_logic.current_player:
                 text = f">>> {text} <<<"
             
@@ -158,7 +186,22 @@ class Renderer:
         
         # 绘制当前状态提示
         current_player = game_logic.get_current_player()
-        current_player_name = current_player.get_player_type_name() + str(current_player.id + 1)
+        
+        # 构建当前玩家名称
+        if not current_player.is_ai:
+            # 真人玩家
+            from utils.config_manager import config_manager
+            is_network_game = hasattr(game_logic, 'is_local_player_turn')
+            
+            if is_network_game and hasattr(current_player, 'name') and current_player.name != config_manager.get_nickname():
+                # 联机游戏中的其他玩家，显示他们的昵称
+                current_player_name = f"玩家{current_player.id + 1}({current_player.name})"
+            else:
+                # 本地玩家（单人游戏或联机游戏中的自己），显示配置的昵称
+                current_player_name = f"玩家{current_player.id + 1}({config_manager.get_nickname()})"
+        else:
+            # AI玩家
+            current_player_name = current_player.get_player_type_name() + str(current_player.id + 1)
         
         if game_logic.waiting_for_effect_dice:
             # 明确显示谁需要投掷效果骰子

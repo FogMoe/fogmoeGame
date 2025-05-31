@@ -128,4 +128,5 @@ Thumbs.db
 
 # Game specific
 *.save
-game_logs/ 
+game_logs/
+saves/ 

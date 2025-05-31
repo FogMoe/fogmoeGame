@@ -14,6 +14,7 @@ class MessageType(Enum):
     PLAYER_LEFT = "player_left"
     PLAYER_DISCONNECTED = "player_disconnected"  # 玩家掉线
     AI_TAKEOVER = "ai_takeover"  # AI接管
+    AI_TURN_START = "AI_TURN_START" # AI回合开始，由房主触发AI行动
     
     # 游戏控制
     START_GAME = "start_game"

@@ -70,6 +70,10 @@ class GameServer:
         self.check_interval = 5  # 每5秒检查一次
         self.heartbeat_checker_thread = None
         
+        # 玩家操作超时检测
+        self.operation_timeout = 90  # 90秒未操作则认为掉线
+        self.player_last_operation = {}  # player_id -> last_operation_time
+        
     def start(self):
         """启动服务器"""
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -145,6 +149,10 @@ class GameServer:
         msg_type = message.type
         data = message.data
         
+        # 更新玩家最后操作时间
+        current_time = time.time()
+        self.player_last_operation[player_id] = current_time
+        
         if msg_type == MessageType.JOIN_ROOM:
             self.handle_join_room(client_socket, player_id, data)
         elif msg_type == MessageType.START_GAME:
@@ -153,6 +161,8 @@ class GameServer:
             self.handle_dice_roll(player_id, data)
         elif msg_type == MessageType.EFFECT_DICE_ROLL:
             self.handle_effect_dice_roll(player_id, data)
+        elif msg_type == MessageType.AI_TURN_START:
+            self.handle_ai_turn_start(player_id, data)
         elif msg_type == MessageType.PING:
             # 更新心跳时间
             with self.lock:
@@ -180,6 +190,14 @@ class GameServer:
                 self.rooms[room_id] = GameRoom(room_id)
             
             room = self.rooms[room_id]
+            
+            # 检查游戏是否已经开始
+            if room.game_started:
+                fail_msg = NetworkMessage(MessageType.JOIN_FAILED, {
+                    'reason': '游戏已经开始，无法加入'
+                })
+                self.send_to_client(client_socket, fail_msg)
+                return
             
             # 尝试加入房间
             player_info = {
@@ -242,15 +260,17 @@ class GameServer:
         if not room_id:
             return
         
-        # 获取玩家的槽位
-        room = self.rooms.get(room_id)
-        if room and player_id in room.players:
-            player_slot = room.players[player_id]['slot']
-            data['player_slot'] = player_slot
+        # 如果客户端没有发送player_slot，才根据player_id查找
+        if 'player_slot' not in data:
+            room = self.rooms.get(room_id)
+            if room and player_id in room.players:
+                player_slot = room.players[player_id]['slot']
+                data['player_slot'] = player_slot
         
         # 广播骰子结果给房间内所有玩家
         dice_msg = NetworkMessage(MessageType.DICE_ROLL, data)
-        self.broadcast_to_room(room_id, dice_msg)
+        # 排除发送者，避免重复处理
+        self.broadcast_to_room(room_id, dice_msg, exclude_player=player_id)
     
     def handle_effect_dice_roll(self, player_id: str, data: dict):
         """处理效果骰子投掷"""
@@ -258,15 +278,47 @@ class GameServer:
         if not room_id:
             return
         
-        # 获取玩家的槽位
-        room = self.rooms.get(room_id)
-        if room and player_id in room.players:
-            player_slot = room.players[player_id]['slot']
-            data['player_slot'] = player_slot
+        # 如果客户端没有发送player_slot，才根据player_id查找
+        if 'player_slot' not in data:
+            room = self.rooms.get(room_id)
+            if room and player_id in room.players:
+                player_slot = room.players[player_id]['slot']
+                data['player_slot'] = player_slot
         
         # 广播效果骰子结果给房间内所有玩家
         effect_msg = NetworkMessage(MessageType.EFFECT_DICE_ROLL, data)
-        self.broadcast_to_room(room_id, effect_msg)
+        # 排除发送者，避免重复处理
+        self.broadcast_to_room(room_id, effect_msg, exclude_player=player_id)
+    
+    def handle_ai_turn_start(self, player_id: str, data: dict):
+        """处理AI回合开始消息（由房主发送）"""
+        print(f"\n[服务器] 收到AI_TURN_START消息: player_id={player_id}, data={data}")
+        
+        room_id = self.player_rooms.get(player_id)
+        if not room_id:
+            print(f"[服务器] 错误: 未找到player_id={player_id}所在的房间")
+            return
+        
+        room = self.rooms.get(room_id)
+        if not room:
+            print(f"[服务器] 错误: 未找到房间room_id={room_id}")
+            return
+            
+        if not room.is_host(player_id):
+            print(f"[服务器] 错误: 非房主 {player_id} 尝试发送AI_TURN_START消息")
+            return
+            
+        # 打印房间信息
+        player_info = []
+        for pid, pdata in room.players.items():
+            player_info.append(f"{pid}(slot={pdata.get('slot')})")
+        player_str = ", ".join(player_info)
+        print(f"[服务器] 房间信息: room_id={room_id}, 玩家列表: {player_str}")
+            
+        # 广播AI回合开始消息给房间内所有玩家
+        ai_turn_msg = NetworkMessage(MessageType.AI_TURN_START, data)
+        self.broadcast_to_room(room_id, ai_turn_msg)
+        print(f"[服务器] 已广播AI回合开始消息，player_slot={data.get('player_slot')}")
     
     def get_room_players_info(self, room: GameRoom) -> list:
         """获取房间内玩家信息"""
@@ -328,7 +380,7 @@ class GameServer:
             pass
     
     def check_heartbeats(self):
-        """检查心跳超时"""
+        """检查心跳超时和操作超时"""
         while self.running:
             try:
                 current_time = time.time()
@@ -336,8 +388,23 @@ class GameServer:
                     # 检查所有客户端的心跳
                     timeout_clients = []
                     for client_socket, client_info in list(self.clients.items()):
+                        player_id = client_info['player_id']
+                        # 检查心跳超时
                         if current_time - client_info['last_heartbeat'] > self.heartbeat_timeout:
-                            timeout_clients.append((client_socket, client_info['player_id']))
+                            timeout_clients.append((client_socket, player_id))
+                            continue
+                        
+                        # 检查操作超时（仅在游戏已开始时）
+                        room_id = self.player_rooms.get(player_id)
+                        if room_id and room_id in self.rooms:
+                            room = self.rooms[room_id]
+                            # 只有在游戏已开始时才检查操作超时
+                            if room.game_started:
+                                # 获取玩家最后操作时间，如果没有记录则使用当前时间
+                                last_operation_time = self.player_last_operation.get(player_id, current_time)
+                                if current_time - last_operation_time > self.operation_timeout:
+                                    print(f"玩家 {player_id} 操作超时 ({self.operation_timeout}秒)")
+                                    timeout_clients.append((client_socket, player_id))
                     
                     # 处理超时的客户端
                     for client_socket, player_id in timeout_clients:
@@ -345,16 +412,26 @@ class GameServer:
                 
                 time.sleep(self.check_interval)
             except Exception as e:
-                print(f"心跳检测错误: {e}")
+                print(f"心跳和操作超时检测错误: {e}")
     
     def handle_player_timeout(self, client_socket: socket.socket, player_id: str):
         """处理玩家超时"""
+        print(f"处理玩家超时: {player_id}")
         # 获取玩家所在房间
         room_id = self.player_rooms.get(player_id)
         if room_id and room_id in self.rooms:
             room = self.rooms[room_id]
             if player_id in room.players:
                 player_info = room.players[player_id]
+                
+                # 发送断线通知给其他玩家
+                disconnected_msg = NetworkMessage(MessageType.PLAYER_DISCONNECTED, {
+                    'player_id': player_id,
+                    'player_slot': player_info['slot'],
+                    'player_name': player_info['name'],
+                    'reason': '操作超时'
+                })
+                self.broadcast_to_room(room_id, disconnected_msg, exclude_player=player_id)
                 
                 # 如果游戏已开始，通知AI接管
                 if room.game_started:
@@ -371,9 +448,11 @@ class GameServer:
                     })
                     self.broadcast_to_room(room_id, leave_msg)
         
-        # 清理连接
+        # 清理连接和操作时间记录
         if player_id in self.player_rooms:
             del self.player_rooms[player_id]
+        if player_id in self.player_last_operation:
+            del self.player_last_operation[player_id]
         if client_socket in self.clients:
             del self.clients[client_socket]
         

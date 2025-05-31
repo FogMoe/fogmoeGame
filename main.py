@@ -9,6 +9,7 @@ import subprocess
 import threading
 import time
 import webbrowser
+from typing import Optional, Callable, List, Dict
 
 from models.constants import (WINDOW_WIDTH, WINDOW_HEIGHT, GAME_STATE_START, 
                             GAME_STATE_PLAYING, GAME_STATE_RESULTS, GAME_STATE_LOBBY,
@@ -20,19 +21,18 @@ from ui.renderer import Renderer
 from ui.animations import AnimationManager
 from network.client import GameClient
 from network.protocol import MessageType
+from utils.config_manager import config_manager
 
 class MonopolyGame:
     """大富翁游戏主类"""
     
     def __init__(self):
         """初始化游戏"""
-        # 初始化pygame
         pygame.init()
         
-        # 创建游戏窗口
+        # 游戏窗口设置
         self.screen = pygame.display.set_mode((WINDOW_WIDTH, WINDOW_HEIGHT))
         pygame.display.set_caption("雾萌")
-        self.clock = pygame.time.Clock()
         
         # 字体设置
         try:
@@ -46,42 +46,51 @@ class MonopolyGame:
         
         # 游戏状态
         self.game_state = GAME_STATE_START
+        self.clock = pygame.time.Clock()
         self.running = True
         
-        # 游戏组件（延迟初始化）
-        self.board = None
-        self.game_logic = None
+        # 游戏组件
+        self.game_logic: Optional[GameLogic] = None
+        self.board: Optional[Board] = None
         self.renderer = None
         self.animation_manager = None
         
-        # 延迟状态管理
+        # 设置菜单相关
+        self.show_settings = False
+        self.settings_button_rect = pygame.Rect(WINDOW_WIDTH - 60, 10, 50, 50)
+        
+        # 昵称输入相关
+        self.show_nickname_input = False
+        self.nickname_input_text = config_manager.get_nickname()
+        self.nickname_input_active = False
+        self.nickname_error_message = ""
+        
+        # 联机游戏相关
+        self.room_state = "menu"  # "menu", "hosting", "joining", "waiting"
+        self.network_client: Optional[GameClient] = None
+        self.is_host = False
+        self.input_active = False
+        self.input_text = ""
+        self.is_online_game = False
+        self.server_process = None
+        
+        # 连接重试相关
+        self.connecting_to_server = False
+        self.connection_cancelled = False
+        
+        # 等待状态相关
         self.waiting_state = None
         self.wait_start_time = 0
         self.wait_duration = 0
         self.pending_action = None
         
-        # 游戏结果
-        self.game_results = None
-        
-        # 网络相关
-        self.network_client = None
-        self.is_online_game = False
-        self.is_host = False
-        self.room_state = "menu"  # menu, hosting, joining, waiting, playing
-        self.input_text = ""
-        self.input_active = False
-        
-        # 错误消息显示
+        # 错误消息相关
         self.error_message = ""
         self.error_message_time = 0
-        self.error_message_duration = 3000  # 显示3秒
+        self.error_message_duration = 3000  # 3秒显示错误消息
         
-        # 设置菜单相关
-        self.show_settings = False
-        self.settings_button_rect = pygame.Rect(WINDOW_WIDTH - 50, 10, 40, 40)
-        
-        # 服务器进程管理
-        self.server_process = None
+        # 游戏结果
+        self.game_results = []
     
     def init_game_components(self):
         """初始化游戏组件"""
@@ -99,6 +108,10 @@ class MonopolyGame:
         self.pending_action = None
         if hasattr(self, 'ai_turn_delay'):
             delattr(self, 'ai_turn_delay')
+            
+        # 如果是联机游戏，设置AI回合回调函数
+        if self.is_online_game and self.network_client:
+            self.network_client.ai_turn_callback = self.handle_ai_network_turn
 
     def handle_events(self):
         """处理游戏事件"""
@@ -123,6 +136,9 @@ class MonopolyGame:
                     else:
                         # 点击在菜单外，关闭菜单
                         self.show_settings = False
+                elif self.show_nickname_input:
+                    # 如果昵称输入界面打开
+                    self.handle_nickname_input_click(event.pos)
                 elif self.game_state == GAME_STATE_START:
                     self.handle_start_screen_click(event.pos)
                 elif self.game_state == GAME_STATE_LOBBY:
@@ -135,20 +151,33 @@ class MonopolyGame:
             elif event.type == pygame.KEYDOWN:
                 if self.game_state == GAME_STATE_LOBBY and self.input_active:
                     self.handle_text_input(event)
+                elif self.show_nickname_input and self.nickname_input_active:
+                    self.handle_nickname_text_input(event)
     
     def handle_start_screen_click(self, pos):
         """处理开始界面的点击"""
+        # 计算按钮位置（与绘制逻辑保持一致）
+        y_offset = 120 + 6 * 35  # 游戏说明起始位置 + 6行说明
+        
         # 单人游戏按钮
-        y_pos = 200 + 6 * 35 + 50
-        single_button = pygame.Rect(WINDOW_WIDTH//2 - 100, y_pos, 200, 60)
+        single_button = pygame.Rect(WINDOW_WIDTH//2 - 100, y_offset + 50, 200, 60)
         if single_button.collidepoint(pos):
             self.start_new_game()
         
         # 联机游戏按钮
-        online_button = pygame.Rect(WINDOW_WIDTH//2 - 100, y_pos + 80, 200, 60)
+        online_button = pygame.Rect(WINDOW_WIDTH//2 - 100, y_offset + 130, 200, 60)
         if online_button.collidepoint(pos):
             self.game_state = GAME_STATE_LOBBY
             self.room_state = "menu"
+        
+        # 昵称设置按钮（放在联机游戏按钮下面）
+        nickname_button_y = y_offset + 210
+        nickname_button = pygame.Rect(WINDOW_WIDTH//2 - 100, nickname_button_y, 200, 40)
+        if nickname_button.collidepoint(pos):
+            self.show_nickname_input = True
+            self.nickname_input_active = True
+            self.nickname_error_message = ""
+            return
     
     def handle_results_click(self, pos):
         """处理结果界面的点击"""
@@ -172,6 +201,13 @@ class MonopolyGame:
                 self.room_state = "joining"
                 self.input_active = True
                 self.input_text = ""
+        
+        elif self.room_state == "hosting":
+            # 如果正在连接服务器，显示取消按钮
+            if self.connecting_to_server:
+                cancel_button = pygame.Rect(WINDOW_WIDTH//2 - 100, 400, 200, 60)
+                if cancel_button.collidepoint(pos):
+                    self.cancel_server_connection()
         
         elif self.room_state == "joining":
             # IP输入框
@@ -209,6 +245,53 @@ class MonopolyGame:
             # 只接受数字和点号
             if event.unicode in '0123456789.':
                 self.input_text += event.unicode
+    
+    def handle_nickname_input_click(self, pos):
+        """处理昵称输入界面的点击"""
+        # 昵称输入框
+        input_box = pygame.Rect(WINDOW_WIDTH//2 - 150, 250, 300, 40)
+        if input_box.collidepoint(pos):
+            self.nickname_input_active = True
+        else:
+            self.nickname_input_active = False
+        
+        # 确认按钮
+        confirm_button = pygame.Rect(WINDOW_WIDTH//2 - 100, 320, 80, 40)
+        if confirm_button.collidepoint(pos):
+            if config_manager.set_nickname(self.nickname_input_text):
+                self.show_nickname_input = False
+                self.nickname_error_message = ""
+            else:
+                self.nickname_error_message = "昵称格式错误（最多7个英文字符）"
+        
+        # 取消按钮
+        cancel_button = pygame.Rect(WINDOW_WIDTH//2 + 20, 320, 80, 40)
+        if cancel_button.collidepoint(pos):
+            self.show_nickname_input = False
+            self.nickname_input_text = config_manager.get_nickname()  # 恢复原来的昵称
+            self.nickname_error_message = ""
+    
+    def handle_nickname_text_input(self, event):
+        """处理昵称文本输入"""
+        if event.key == pygame.K_RETURN:
+            # 回车键确认
+            if config_manager.set_nickname(self.nickname_input_text):
+                self.show_nickname_input = False
+                self.nickname_error_message = ""
+            else:
+                self.nickname_error_message = "昵称格式错误（最多7个英文字符）"
+        elif event.key == pygame.K_ESCAPE:
+            # ESC键取消
+            self.show_nickname_input = False
+            self.nickname_input_text = config_manager.get_nickname()
+            self.nickname_error_message = ""
+        elif event.key == pygame.K_BACKSPACE:
+            self.nickname_input_text = self.nickname_input_text[:-1]
+        else:
+            # 只允许英文字符、数字、下划线、短横线
+            if event.unicode in 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-':
+                if len(self.nickname_input_text) < 7:  # 限制长度
+                    self.nickname_input_text += event.unicode
     
     def cleanup(self):
         """清理资源"""
@@ -274,6 +357,11 @@ class MonopolyGame:
     
     def start_hosting(self):
         """开始托管游戏"""
+        # 如果已有客户端实例，先断开
+        if self.network_client:
+            self.network_client.disconnect()
+            self.network_client = None
+
         # 创建网络客户端
         self.network_client = GameClient()
         
@@ -281,46 +369,180 @@ class MonopolyGame:
         import socket
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
+            # 连接到一个公共DNS服务器以获取本机在局域网中的IP
+            # 这不会真的发送数据，只是为了获取getsockname()
+            s.connect(("8.8.8.8", 80)) 
             local_ip = s.getsockname()[0]
             s.close()
-        except:
+        except OSError: # 更具体的异常捕获
+            local_ip = "localhost" # 备选方案
+        except Exception as e: # 其他未知异常
+            print(f"获取IP地址时发生错误: {e}")
             local_ip = "localhost"
         
-        # 连接到服务器（假设服务器已经在运行）
+        print(f"start_hosting: 本机IP识别为: {local_ip}")
+
+        # 首先尝试直接连接（可能服务器已由其他方式启动或未正确关闭）
         if self.network_client.connect(local_ip, 29188):
-            self.network_client.join_room("主机玩家", GAME_VERSION)
+            print("start_hosting: 直接连接服务器成功。")
+            self.network_client.join_room(config_manager.get_nickname(), GAME_VERSION)
             self.is_host = True
             self.room_state = "waiting"
-            
-            # 注册网络消息处理器
             self.setup_network_handlers()
         else:
-            # 如果连接失败，尝试启动服务器
-            self.network_client = None
+            # 如果直接连接失败，则尝试启动服务器并连接
+            print("start_hosting: 直接连接失败，尝试启动服务器...")
+            if self.network_client: # 清理刚才连接失败的实例
+                 self.network_client.disconnect()
+            self.network_client = None # 确保完全清理
+
             self.show_error_message("正在启动服务器...")
             
-            # 启动服务器进程
             if self.start_server():
-                # 等待服务器启动
-                time.sleep(1)  # 给服务器一点启动时间
-                
-                # 再次尝试连接
+                print("start_hosting: 服务器进程已启动，开始尝试连接...")
+                # 创建新的客户端实例用于连接到新启动的服务器
+                if self.network_client: # 再次确保之前的实例已清理
+                    self.network_client.disconnect()
                 self.network_client = GameClient()
-                if self.network_client.connect(local_ip, 29188):
-                    self.network_client.join_room("主机玩家", GAME_VERSION)
-                    self.is_host = True
-                    self.room_state = "waiting"
-                    
-                    # 注册网络消息处理器
-                    self.setup_network_handlers()
-                else:
-                    self.room_state = "menu"
-                    self.network_client = None
-                    self.show_error_message("无法连接到服务器！")
+                self.attempt_server_connection(local_ip) # 使用新的实例去连接
             else:
+                print("start_hosting: 启动服务器进程失败。")
                 self.room_state = "menu"
                 self.show_error_message("无法启动服务器！")
+                if self.network_client: # 确保清理
+                    self.network_client.disconnect()
+                    self.network_client = None
+
+    def attempt_server_connection(self, local_ip):
+        """智能重试连接到服务器"""
+        import threading
+        
+        # 设置连接状态
+        self.connecting_to_server = True
+        self.connection_cancelled = False
+        
+        # 确保在开始新的连接尝试前，旧的客户端实例（如果存在且是当前尝试的这个）被清理
+        # 注意：这里的 self.network_client 应该是 start_hosting 中新创建的那个
+        # 但作为保险，如果它意外地是其他的，或者 start_hosting 中没有正确创建，则这里重新创建
+        if not self.network_client or not isinstance(self.network_client, GameClient):
+            print("attempt_server_connection: network_client 无效，重新创建。")
+            if self.network_client: # 如果存在但类型不对，尝试断开
+                try:
+                    self.network_client.disconnect()
+                except: pass # 忽略可能的错误
+            self.network_client = GameClient()
+            
+        # 持有 connection_thread 将要使用的客户端实例引用
+        # 防止 self.network_client 在 MonopolyGame 主类中被意外修改
+        # 虽然目前代码逻辑里不会，但这是更安全的方式
+        client_for_this_connection_attempt = self.network_client
+
+        def connection_thread():
+            max_attempts = 15
+            attempt_interval = 0.5 
+            
+            print(f"attempt_server_connection: 开始连接线程 (最多 {max_attempts} 次尝试)")
+
+            for attempt in range(max_attempts):
+                if self.connection_cancelled:
+                    print("attempt_server_connection: 连接被用户取消。")
+                    self.connecting_to_server = False
+                    # 如果是因为取消而失败，确保client_for_this_connection_attempt被清理
+                    if client_for_this_connection_attempt:
+                        client_for_this_connection_attempt.disconnect()
+                    # 如果此线程中使用的客户端实例正是 self.network_client，则也清空它
+                    if self.network_client == client_for_this_connection_attempt:
+                        self.network_client = None 
+                    return
+                
+                progress_msg = f"正在连接服务器... ({attempt + 1}/{max_attempts})"
+                self.show_error_message(progress_msg)
+                
+                # 每次循环都检查端口，因为服务器可能需要时间启动
+                if self.check_server_port(local_ip, 29188):
+                    print(f"attempt_server_connection (尝试 {attempt+1}): 端口 {local_ip}:29188 可用，尝试连接...")
+                    # 再次检查是否已取消
+                    if self.connection_cancelled:
+                        # ... (处理同上)
+                        print("attempt_server_connection: 连接在端口检查后被用户取消。")
+                        self.connecting_to_server = False
+                        if client_for_this_connection_attempt:
+                            client_for_this_connection_attempt.disconnect()
+                        if self.network_client == client_for_this_connection_attempt:
+                             self.network_client = None
+                        return
+                    
+                    # 使用为此连接尝试保留的客户端实例
+                    if client_for_this_connection_attempt.connect(local_ip, 29188):
+                        print(f"attempt_server_connection (尝试 {attempt+1}): 连接成功！")
+                        # 只有成功连接后，才把这个client实例正式赋值给self.network_client
+                        # (虽然在当前逻辑下它们应该是同一个对象，但这样做更明确)
+                        self.network_client = client_for_this_connection_attempt
+                        self.network_client.join_room(config_manager.get_nickname(), GAME_VERSION)
+                        self.is_host = True
+                        self.room_state = "waiting"
+                        self.connecting_to_server = False
+                        self.setup_network_handlers()
+                        self.error_message = "" # 清除连接进度消息
+                        return
+                    else:
+                        print(f"attempt_server_connection (尝试 {attempt+1}): 连接失败，但端口可用。可能服务器仍在初始化。")
+                        # 连接失败，此client_for_this_connection_attempt实例可能已损坏，
+                        # 下次循环前理论上应该创建新的，但当前GameClient.connect已有内部清理。
+                        # 为保险起见，确保它被断开，以便下次循环时connect方法会重新创建socket
+                        client_for_this_connection_attempt.disconnect() 
+                        # 然后为了下一次尝试，需要一个新的GameClient实例
+                        # 但我们是在循环中，所以直接寄希望于下一次 connect 会处理好
+                        # 或者，严格来说，这里应该创建一个新的 client_for_this_connection_attempt
+                        # 但考虑到 GameClient.connect 现在会处理自己的socket，暂时不在此处重新创建
+                        # 只需要确保它调用了 disconnect
+                else:
+                    print(f"attempt_server_connection (尝试 {attempt+1}): 端口 {local_ip}:29188 不可用。")
+                
+                # 等待一段时间后重试
+                for _ in range(int(attempt_interval * 10)):
+                    if self.connection_cancelled:
+                        # ... (处理同上)
+                        print("attempt_server_connection: 连接在等待间隔中被用户取消。")
+                        self.connecting_to_server = False
+                        if client_for_this_connection_attempt:
+                            client_for_this_connection_attempt.disconnect()
+                        if self.network_client == client_for_this_connection_attempt:
+                            self.network_client = None
+                        return
+                    time.sleep(0.1)
+            
+            # 所有尝试都失败了
+            print("attempt_server_connection: 所有连接尝试失败。")
+            self.room_state = "menu"
+            self.connecting_to_server = False
+            if client_for_this_connection_attempt: # 清理最后一次尝试的客户端
+                client_for_this_connection_attempt.disconnect()
+            
+            # 如果 self.network_client 指向的是这个失败的实例，也清空它
+            if self.network_client == client_for_this_connection_attempt:
+                self.network_client = None 
+
+            if not self.connection_cancelled: # 只有在不是用户主动取消时才显示超时
+                self.show_error_message("服务器启动超时，请重试")
+            else:
+                self.error_message = "" # 用户取消，清除进度消息
+        
+        thread = threading.Thread(target=connection_thread)
+        thread.daemon = True
+        thread.start()
+    
+    def check_server_port(self, host, port):
+        """检查服务器端口是否可用"""
+        try:
+            import socket
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(1)  # 1秒超时
+            result = sock.connect_ex((host, port))
+            sock.close()
+            return result == 0
+        except:
+            return False
     
     def connect_to_host(self, ip_address):
         """连接到主机"""
@@ -328,7 +550,7 @@ class MonopolyGame:
         
         # 尝试连接
         if self.network_client.connect(ip_address, 29188):
-            self.network_client.join_room("客户端玩家", GAME_VERSION)
+            self.network_client.join_room(config_manager.get_nickname(), GAME_VERSION)
             self.is_host = False
             self.room_state = "waiting"
             
@@ -395,6 +617,8 @@ class MonopolyGame:
                 if self.animation_manager:
                     self.animation_manager.start_player_move_animation(
                         self.game_logic.current_player, start_position, end_position, self.game_logic.dice_result)
+                
+                # 注意：移动完成后的处理会在动画完成时通过update_animations自动触发
     
     def handle_network_effect_dice(self, data):
         """处理网络效果骰子"""
@@ -407,7 +631,8 @@ class MonopolyGame:
                 self.game_logic.effect_dice_result = data['effect_result']
                 
                 # 执行效果
-                result_message = self.game_logic.execute_effect(self.game_logic.effect_type, self.game_logic.get_current_player())
+                current_player = self.game_logic.get_current_player()
+                result_message = self.game_logic.execute_effect(self.game_logic.effect_type, current_player)
                 if result_message:
                     self.game_logic.message = result_message
                 
@@ -416,7 +641,9 @@ class MonopolyGame:
                 self.game_logic.effect_type = ""
                 
                 # 设置延迟后进入下一回合
-                self.start_wait('effect_completed', 1500, self.complete_effect_dice_roll)
+                # 如果是AI玩家，使用较长的延迟时间让玩家能看清楚
+                delay = 2000 if current_player.is_ai else 1500
+                self.start_wait('effect_completed', delay, self.complete_effect_dice_roll)
     
     def handle_game_state_update(self, data):
         """处理游戏状态更新"""
@@ -428,6 +655,8 @@ class MonopolyGame:
         player_slot = data.get('player_slot')
         player_name = data.get('player_name', f'玩家{player_slot + 1}')
         
+        print(f"\n[AI接管] 收到玩家 {player_name}(槽位:{player_slot}) 的AI接管通知")
+        
         # 显示消息
         self.show_error_message(f"{player_name} 已断线，由AI接管")
         
@@ -435,8 +664,16 @@ class MonopolyGame:
         if self.game_logic and hasattr(self.game_logic, 'players'):
             for player in self.game_logic.players:
                 if player.id == player_slot:
+                    print(f"[AI接管] 将玩家 {player.name}(槽位:{player.id}) 标记为AI控制")
                     player.is_ai = True
                     player.name = f"AI{player_slot + 1}"
+                    
+                    # 如果是当前回合的玩家，且是房主，则立即触发AI行动
+                    current_player = self.game_logic.get_current_player()
+                    if self.is_host and current_player.id == player_slot:
+                        print(f"[AI接管] 当前是掉线玩家的回合，立即触发AI行动")
+                        # 设置一个短暂延迟，确保状态更新后再执行AI行动
+                        self.start_wait('ai_takeover', 500, lambda: self.handle_ai_network_turn(player_slot))
                     break
     
     def leave_lobby(self):
@@ -525,20 +762,25 @@ class MonopolyGame:
             if not self.game_logic.can_current_player_roll():
                 return
         
-        result_message = self.game_logic.roll_effect_dice()
-        if result_message:
-            self.game_logic.message = result_message
+        # 投掷效果骰子，这会设置 self.game_logic.effect_dice_result
+        self.game_logic.roll_effect_dice()
+
+        # 根据效果类型和骰子结果构建消息
+        current_player = self.game_logic.get_current_player()
+        if self.game_logic.effect_type == 'reward':
+            self.game_logic.message = f"玩家{current_player.id + 1}获得{self.game_logic.effect_dice_result}金币！"
+        elif self.game_logic.effect_type == 'penalty':
+            self.game_logic.message = f"玩家{current_player.id + 1}失去{self.game_logic.effect_dice_result}金币！"
+        else:
+            self.game_logic.message = ""
         
         # 如果是联机游戏，发送效果骰子结果
         if self.is_online_game and self.network_client:
-            current_player = self.game_logic.get_current_player()
-            if not current_player.is_ai:
-                self.network_client.send_effect_dice_roll(self.game_logic.effect_dice_result)
-        
-        # 如果是联机游戏的AI，房主也要发送效果骰子结果
-        if (self.is_online_game and self.network_client and current_player.is_ai and 
-            isinstance(self.game_logic, NetworkGameLogic) and self.game_logic.is_host()):
-            self.network_client.send_effect_dice_roll(self.game_logic.effect_dice_result)
+            # 发送当前玩家的槽位信息
+            self.network_client.send_effect_dice_roll_with_slot(
+                self.game_logic.effect_dice_result, 
+                self.game_logic.current_player
+            )
         
         # 设置非阻塞等待
         self.start_wait('effect_completed', 1500, self.complete_effect_dice_roll)
@@ -550,28 +792,84 @@ class MonopolyGame:
         # 进入下一回合
         self.game_logic.next_turn()
     
-    def handle_ai_effect_dice_roll(self):
-        """处理AI的效果骰子投掷"""
-        if not self.game_logic:
-            return
-        result_message = self.game_logic.roll_effect_dice()
-        if result_message:
-            self.game_logic.message = result_message
-        
-        # 如果是联机游戏的AI，房主发送效果骰子结果
-        if (self.is_online_game and self.network_client and 
-            isinstance(self.game_logic, NetworkGameLogic) and self.game_logic.is_host()):
-            self.network_client.send_effect_dice_roll(self.game_logic.effect_dice_result)
-        
-        # 设置非阻塞等待
-        self.start_wait('ai_effect', 2000, self.complete_ai_effect_dice_roll)
+    def handle_ai_network_turn(self, player_slot: int):
+        """处理网络模式下AI的回合"""
+        print(f"\n[AI回合] handle_ai_network_turn被调用: player_slot={player_slot}, is_host={self.is_host}, is_online_game={self.is_online_game}")
+        if self.is_online_game and self.is_host and self.game_logic and self.network_client:
+            current_player = self.game_logic.get_current_player()
+            print(f"[AI回合] 主机处理AI回合: AI槽位={player_slot}, 当前回合玩家槽位={current_player.id}, 是否AI={current_player.is_ai}")
+            print(f"[AI回合] 当前回合状态: waiting_for_effect_dice={self.game_logic.waiting_for_effect_dice}, waiting_state={self.waiting_state}")
+            
+            # 确保当前是AI玩家的回合，且槽位匹配
+            if current_player.id == player_slot and current_player.is_ai:
+                print(f"[AI回合] 主机确认AI回合有效，准备执行AI动作")
+                # AI投掷骰子
+                if not self.game_logic.waiting_for_effect_dice: # 如果不是等待效果骰子
+                    dice_result = self.game_logic.roll_dice()
+                    print(f"[AI回合] AI {player_slot + 1} 投掷了骰子: {dice_result}")
+                    self.network_client.send_dice_roll_with_slot(dice_result, player_slot)
+                    print(f"[AI回合] 已发送AI骰子结果: dice_result={dice_result}, player_slot={player_slot}")
+                    
+                    # 直接触发玩家移动，不等待玩家点击
+                    start_position = current_player.position
+                    current_player.move(dice_result)
+                    end_position = current_player.position
+                    
+                    # 开始玩家移动动画
+                    if self.animation_manager:
+                        self.animation_manager.start_player_move_animation(
+                            self.game_logic.current_player, start_position, end_position, dice_result)
+                        print(f"[AI回合] 主机AI移动动画已开始，从{start_position}到{end_position}")
+                        print(f"[AI回合] AI移动完成后会自动处理格子效果和下一回合")
+                        
+                        # 不在此处等待效果骰子，由动画完成后的处理来触发
+                        # 移动动画完成后会调用handle_move_completion，然后决定是否需要效果骰子
+                else: # AI投掷效果骰子
+                    effect_dice_result = self.game_logic.roll_effect_dice()
+                    print(f"[AI回合] AI {player_slot + 1} 投掷了效果骰子: {effect_dice_result}, 效果类型: {self.game_logic.effect_type}")
+                    self.network_client.send_effect_dice_roll_with_slot(effect_dice_result, player_slot)
+                    print(f"[AI回合] 已发送AI效果骰子结果: effect_dice_result={effect_dice_result}, player_slot={player_slot}")
+                    
+                    # 根据效果类型和骰子结果构建消息
+                    if self.game_logic.effect_type == 'reward':
+                        self.game_logic.message = f"AI{current_player.id + 1}获得{effect_dice_result}金币！"
+                    elif self.game_logic.effect_type == 'penalty':
+                        self.game_logic.message = f"AI{current_player.id + 1}失去{effect_dice_result}金币！"
+                    else:
+                        self.game_logic.message = ""
+                    
+                    # 确保执行效果并进入下一回合
+                    self.start_wait("ai_effect", 1000, self.handle_effect_completion)
+                    print(f"[AI回合] 主机已安排AI效果处理和回合推进，1000ms后自动执行")
+            else:
+                print(f"[AI回合] 警告: 主机处理AI回合时发现槽位不匹配或非AI玩家: player_slot={player_slot}, current_player.id={current_player.id}, is_ai={current_player.is_ai}")
+        else:
+            reason = []
+            if not self.is_online_game: reason.append("非联机游戏")
+            if not self.is_host: reason.append("非主机")
+            if not self.game_logic: reason.append("game_logic为空")
+            if not self.network_client: reason.append("network_client为空")
+            print(f"[AI回合] handle_ai_network_turn未执行AI动作，原因: {', '.join(reason)}")
     
-    def complete_ai_effect_dice_roll(self):
-        """完成AI效果骰子投掷后的处理"""
+    def handle_effect_completion(self):
+        """处理格子效果完成后的逻辑"""
         if not self.game_logic:
             return
+        print(f"\n[效果完成] 处理效果完成逻辑")
+        current_player = self.game_logic.get_current_player()
+        print(f"[效果完成] 当前玩家: id={current_player.id}, is_ai={current_player.is_ai}, money={current_player.money}")
+        
+        # 执行效果
+        self.game_logic.execute_effect(self.game_logic.effect_type, current_player)
+        print(f"[效果完成] 执行效果: type={self.game_logic.effect_type}, effect_dice_result={self.game_logic.effect_dice_result}")
+        
+        # 清除效果状态
+        self.game_logic.waiting_for_effect_dice = False
+        self.game_logic.effect_type = ""
+        
         # 进入下一回合
-        self.game_logic.next_turn()
+        print(f"[效果完成] 准备进入下一回合")
+        self.proceed_to_next_turn()
     
     def start_wait(self, state, duration, action):
         """开始非阻塞等待"""
@@ -614,44 +912,52 @@ class MonopolyGame:
             return
         current_player = self.game_logic.get_current_player()
         
-        # 如果当前是AI回合且没有动画在运行且没有等待效果骰子且没有在等待状态
-        if (current_player.is_ai and 
-            not self.animation_manager.is_any_animation_running() and
-            not self.game_logic.waiting_for_effect_dice and
-            not self.game_logic.is_game_over() and
-            not self.waiting_state):
+        # 检查是否是AI回合
+        if not current_player.is_ai:
+            return
             
-            # 联机游戏时，只有房主才执行AI操作
-            if self.is_online_game and isinstance(self.game_logic, NetworkGameLogic):
-                if not self.game_logic.should_ai_act_locally():
-                    return
+        # 检查AI是否可以行动（没有动画运行、没有等待效果骰子、游戏未结束、没有等待状态）
+        if (self.animation_manager.is_any_animation_running() or
+            self.game_logic.waiting_for_effect_dice or
+            self.game_logic.is_game_over() or
+            self.waiting_state):
+            return
             
-            # 添加AI思考时间，避免回合切换太快
-            if not hasattr(self, 'ai_turn_delay'):
-                self.ai_turn_delay = pygame.time.get_ticks()
-            
-            # 等待1秒钟后AI自动开始回合
-            if pygame.time.get_ticks() - self.ai_turn_delay >= 1000:
-                self.start_player_turn()
-                # 重置延迟计时器
-                delattr(self, 'ai_turn_delay')
+        # 联机游戏时，检查是否应该在本地执行AI操作
+        if self.is_online_game and isinstance(self.game_logic, NetworkGameLogic):
+            if not self.game_logic.should_ai_act_locally():
+                return
+        
+        # 添加AI思考时间，避免回合切换太快
+        if not hasattr(self, 'ai_turn_delay'):
+            self.ai_turn_delay = pygame.time.get_ticks()
+        
+        # 等待1秒钟后AI自动开始回合
+        if pygame.time.get_ticks() - self.ai_turn_delay >= 1000:
+            self.start_player_turn()
+            # 重置延迟计时器
+            delattr(self, 'ai_turn_delay')
     
     def execute_player_move(self):
         """执行玩家移动"""
         if not self.game_logic or not self.animation_manager:
             return
-        dice = self.game_logic.roll_dice()
-        self.game_logic.dice_result = dice
+        
         current_player = self.game_logic.get_current_player()
         
-        # 如果是联机游戏，发送骰子结果
-        if self.is_online_game and self.network_client and not current_player.is_ai:
-            self.network_client.send_dice_roll(dice)
+        # 联机游戏中，只有本地玩家才生成骰子
+        if self.is_online_game and isinstance(self.game_logic, NetworkGameLogic):
+            # 如果不是本地玩家的回合，等待网络同步
+            if not self.game_logic.is_local_player_turn():
+                return
         
-        # 如果是联机游戏的AI，房主也要发送骰子结果
-        if (self.is_online_game and self.network_client and current_player.is_ai and 
-            isinstance(self.game_logic, NetworkGameLogic) and self.game_logic.is_host()):
-            self.network_client.send_dice_roll(dice)
+        dice = self.game_logic.roll_dice()
+        self.game_logic.dice_result = dice
+        
+        # 如果是联机游戏，发送骰子结果
+        if self.is_online_game and self.network_client:
+            # 总是发送当前玩家的槽位，无论是真人还是AI
+            self.network_client.send_dice_roll_with_slot(dice, self.game_logic.current_player)
         
         # 记录起始位置
         start_position = current_player.position
@@ -668,9 +974,20 @@ class MonopolyGame:
         """处理移动完成后的逻辑"""
         if not self.game_logic or not self.board:
             return
+        print(f"\n[移动完成] 处理移动完成逻辑")
         current_player = self.game_logic.get_current_player()
-        effect_type, message = self.game_logic.handle_cell_effect(current_player, self.board)
+        print(f"[移动完成] 当前玩家: id={current_player.id}, is_ai={current_player.is_ai}, position={current_player.position}")
+        
+        effect_result = self.game_logic.handle_cell_effect(current_player, self.board)
+        
+        if isinstance(effect_result, tuple): # 如果返回的是元组 (effect_type, message)
+            effect_type, message = effect_result
+        else: # 如果只返回消息字符串
+            effect_type = "normal"
+            message = effect_result
+
         self.game_logic.message = message
+        print(f"[移动完成] 格子效果: type={effect_type}, message={message}")
         
         if self.game_logic.waiting_for_click:
             self.game_logic.waiting_for_click = False
@@ -681,31 +998,124 @@ class MonopolyGame:
             self.game_logic.dice_result = 0
             
             if current_player.is_ai:
-                # AI玩家自动处理效果骰子，添加延迟让玩家观察
-                self.start_wait('move_completed', 800, self.handle_ai_effect_dice_roll)
+                # 联机游戏中，检查是否应该在本地执行AI操作
+                if (self.is_online_game and isinstance(self.game_logic, NetworkGameLogic) and 
+                    not self.game_logic.should_ai_act_locally()):
+                    # 非房主客户端只等待网络同步
+                    print(f"[移动完成] 非房主客户端，等待网络同步AI的效果骰子")
+                    pass
+                else:
+                    # 单机游戏或房主处理AI效果骰子
+                    print(f"[移动完成] 安排AI在800ms后投掷效果骰子")
+                    self.start_wait('move_completed', 800, self.handle_ai_effect_dice_roll)
             else:
                 # 真实玩家需要手动点击投掷效果骰子
+                print(f"[移动完成] 玩家需要手动点击投掷效果骰子")
                 pass  # 等待玩家点击
         else:
             # 其他格子延迟后进入下一回合
             delay = 800 if current_player.is_ai else 500
+            print(f"[移动完成] 不需要效果骰子，{delay}ms后进入下一回合")
             self.start_wait('move_completed', delay, self.proceed_to_next_turn)
     
     def proceed_to_next_turn(self):
         """进入下一回合"""
         if not self.game_logic:
             return
+        print(f"\n[下一回合] 准备进入下一回合")
+        
+        # 记录当前玩家信息（切换前）
+        current_player_id = self.game_logic.current_player
+        current_player = self.game_logic.get_current_player()
+        print(f"[下一回合] 当前玩家(切换前): id={current_player_id}, is_ai={current_player.is_ai}")
+        
         # 重置AI延迟计时器
         if hasattr(self, 'ai_turn_delay'):
             delattr(self, 'ai_turn_delay')
+            print(f"[下一回合] 重置AI延迟计时器")
         
+        # 调用next_turn，这会触发回合切换
+        # 如果是NetworkGameLogic，且下一个玩家是AI，会发送AI_TURN_START消息
         self.game_logic.next_turn()
+        
+        # 打印新的当前玩家信息（切换后）
+        new_current_id = self.game_logic.current_player
+        new_current = self.game_logic.get_current_player()
+        print(f"[下一回合] 新的当前玩家(切换后): id={new_current_id}, is_ai={new_current.is_ai}")
+        
+        # 特别提示NetworkGameLogic的情况
+        if self.is_online_game and isinstance(self.game_logic, NetworkGameLogic):
+            if new_current.is_ai:
+                print(f"[下一回合] 联机游戏中下一玩家是AI，如果是房主会发送AI_TURN_START消息")
+                if self.game_logic.is_host():
+                    print(f"[下一回合] 本地是房主，已在NetworkGameLogic.next_turn中发送AI_TURN_START消息")
+                else:
+                    print(f"[下一回合] 本地不是房主，等待接收AI_TURN_START消息")
+            else:
+                print(f"[下一回合] 联机游戏中下一玩家是真人玩家")
+                if self.game_logic.is_local_player_turn():
+                    print(f"[下一回合] 是本地玩家的回合")
+                else:
+                    print(f"[下一回合] 是其他玩家的回合")
     
-    def handle_effect_completion(self):
-        """处理格子效果完成后的逻辑"""
-        # 该方法现在不再需要，因为效果处理已经移到handle_move_completion中
-        pass
+    def handle_ai_effect_dice_roll(self):
+        """处理AI的效果骰子投掷"""
+        if not self.game_logic:
+            return
+        print(f"\n[AI效果骰子] 处理AI的效果骰子投掷")
+            
+        current_player = self.game_logic.get_current_player()
+        print(f"[AI效果骰子] 当前玩家: id={current_player.id}, is_ai={current_player.is_ai}")
+        
+        # 确保当前是AI回合
+        if not current_player.is_ai:
+            print(f"[AI效果骰子] 当前不是AI回合，退出")
+            return
+            
+        # 联机游戏时，检查是否应该在本地执行AI操作
+        if self.is_online_game and isinstance(self.game_logic, NetworkGameLogic):
+            if not self.game_logic.should_ai_act_locally():
+                print(f"[AI效果骰子] 联机游戏中不应在本地执行AI操作，退出")
+                return
+        
+        print(f"[AI效果骰子] 执行效果骰子投掷: 效果类型={self.game_logic.effect_type}")
+                
+        # 投掷效果骰子，这会设置 self.game_logic.effect_dice_result
+        effect_dice_result = self.game_logic.roll_effect_dice()
+        print(f"[AI效果骰子] 投掷结果: {effect_dice_result}")
+
+        # 根据效果类型和骰子结果构建消息
+        if self.game_logic.effect_type == 'reward':
+            self.game_logic.message = f"AI{current_player.id + 1}获得{effect_dice_result}金币！"
+        elif self.game_logic.effect_type == 'penalty':
+            self.game_logic.message = f"AI{current_player.id + 1}失去{effect_dice_result}金币！"
+        else:
+            self.game_logic.message = ""
+        print(f"[AI效果骰子] 设置消息: {self.game_logic.message}")
+            
+        # 如果是联机游戏的AI，房主发送效果骰子结果
+        if (self.is_online_game and self.network_client and 
+            isinstance(self.game_logic, NetworkGameLogic) and self.game_logic.is_host()):
+            self.network_client.send_effect_dice_roll_with_slot(
+                effect_dice_result,
+                self.game_logic.current_player
+            )
+            print(f"[AI效果骰子] 已发送效果骰子结果: {effect_dice_result}, player_slot={self.game_logic.current_player}")
+            
+        # 设置非阻塞等待
+        self.start_wait('ai_effect', 2000, self.complete_ai_effect_dice_roll)
+        print(f"[AI效果骰子] 设置2000ms后执行complete_ai_effect_dice_roll")
     
+    def complete_ai_effect_dice_roll(self):
+        """完成AI效果骰子投掷后的处理"""
+        if not self.game_logic:
+            return
+        print(f"\n[AI效果完成] 完成AI效果骰子投掷")
+        
+        # 进入下一回合
+        print(f"[AI效果完成] 进入下一回合")
+        self.game_logic.next_turn()
+
     def render(self):
         """渲染游戏画面"""
         self.screen.fill(WHITE)
@@ -731,6 +1141,10 @@ class MonopolyGame:
         if self.show_settings:
             self.draw_settings_menu()
         
+        # 绘制昵称输入界面
+        if self.show_nickname_input:
+            self.draw_nickname_input()
+        
         # 绘制错误消息（如果有）
         if self.error_message:
             # 背景框
@@ -751,7 +1165,7 @@ class MonopolyGame:
         """绘制开始界面"""
         # 标题
         title_text = self.big_font.render("雾萌", True, BLACK)
-        title_rect = title_text.get_rect(center=(WINDOW_WIDTH//2, 100))
+        title_rect = title_text.get_rect(center=(WINDOW_WIDTH//2, 80))
         self.screen.blit(title_text, title_rect)
         
         # 游戏说明
@@ -764,7 +1178,7 @@ class MonopolyGame:
             "• 丢弃格（深蓝色）：失去金币"
         ]
         
-        y_offset = 200
+        y_offset = 120
         for instruction in instructions:
             text = self.font.render(instruction, True, BLACK)
             # 左对齐而不是居中，避免重叠
@@ -788,6 +1202,21 @@ class MonopolyGame:
         online_text = self.font.render("联机游戏", True, BLACK)
         online_rect = online_text.get_rect(center=online_button.center)
         self.screen.blit(online_text, online_rect)
+        
+        # 设置昵称按钮（放在联机游戏按钮下面）
+        nickname_button_y = y_offset + 210
+        nickname_button = pygame.Rect(WINDOW_WIDTH//2 - 100, nickname_button_y, 200, 40)
+        pygame.draw.rect(self.screen, (135, 206, 235), nickname_button)  # 天蓝色
+        pygame.draw.rect(self.screen, BLACK, nickname_button, 2)
+        button_text = self.small_font.render("设置昵称", True, BLACK)
+        button_rect = button_text.get_rect(center=nickname_button.center)
+        self.screen.blit(button_text, button_rect)
+        
+        # 显示当前昵称（放在设置按钮下面）
+        nickname_display = f"当前昵称: {config_manager.get_nickname()}"
+        nickname_text = self.small_font.render(nickname_display, True, (70, 70, 200))  # 使用深蓝色
+        nickname_rect = nickname_text.get_rect(center=(WINDOW_WIDTH//2, nickname_button_y + 55))
+        self.screen.blit(nickname_text, nickname_rect)
     
     def draw_lobby_screen(self):
         """绘制联机大厅界面"""
@@ -844,6 +1273,27 @@ class MonopolyGame:
             connect_text = self.font.render("连接", True, BLACK)
             connect_rect = connect_text.get_rect(center=connect_button.center)
             self.screen.blit(connect_text, connect_rect)
+        
+        elif self.room_state == "hosting":
+            # 如果正在连接服务器
+            if self.connecting_to_server:
+                # 标题
+                title = self.big_font.render("正在创建房间", True, BLACK)
+                title_rect = title.get_rect(center=(WINDOW_WIDTH//2, 150))
+                self.screen.blit(title, title_rect)
+                
+                # 显示连接进度信息
+                info_text = self.font.render("正在启动服务器并建立连接...", True, BLACK)
+                info_rect = info_text.get_rect(center=(WINDOW_WIDTH//2, 250))
+                self.screen.blit(info_text, info_rect)
+                
+                # 取消按钮
+                cancel_button = pygame.Rect(WINDOW_WIDTH//2 - 100, 400, 200, 60)
+                pygame.draw.rect(self.screen, RED, cancel_button)
+                pygame.draw.rect(self.screen, BLACK, cancel_button, 3)
+                cancel_text = self.font.render("取消", True, WHITE)
+                cancel_rect = cancel_text.get_rect(center=cancel_button.center)
+                self.screen.blit(cancel_text, cancel_rect)
         
         elif self.room_state == "waiting":
             # 标题
@@ -1002,6 +1452,75 @@ class MonopolyGame:
         hint_text = self.small_font.render("点击外部区域关闭", True, GRAY)
         hint_rect = hint_text.get_rect(center=(WINDOW_WIDTH//2, 460))
         self.screen.blit(hint_text, hint_rect)
+    
+    def draw_nickname_input(self):
+        """绘制昵称输入界面"""
+        # 半透明背景
+        overlay = pygame.Surface((WINDOW_WIDTH, WINDOW_HEIGHT))
+        overlay.fill(BLACK)
+        overlay.set_alpha(128)
+        self.screen.blit(overlay, (0, 0))
+        
+        # 输入框背景
+        input_bg_width = 400
+        input_bg_height = 200
+        input_bg_rect = pygame.Rect(WINDOW_WIDTH//2 - input_bg_width//2, 200, input_bg_width, input_bg_height)
+        pygame.draw.rect(self.screen, WHITE, input_bg_rect)
+        pygame.draw.rect(self.screen, BLACK, input_bg_rect, 3)
+        
+        # 标题
+        title_text = self.font.render("设置昵称", True, BLACK)
+        title_rect = title_text.get_rect(center=(WINDOW_WIDTH//2, 220))
+        self.screen.blit(title_text, title_rect)
+        
+        # 昵称输入框
+        input_box = pygame.Rect(WINDOW_WIDTH//2 - 150, 250, 300, 40)
+        color = RED if self.nickname_input_active else BLACK
+        pygame.draw.rect(self.screen, WHITE, input_box)
+        pygame.draw.rect(self.screen, color, input_box, 2)
+        
+        # 显示输入的昵称
+        text_surface = self.font.render(self.nickname_input_text, True, BLACK)
+        self.screen.blit(text_surface, (input_box.x + 10, input_box.y + 10))
+        
+        # 提示文本
+        hint_text = self.small_font.render("最多7个英文字符（字母、数字、_、-）", True, GRAY)
+        hint_rect = hint_text.get_rect(center=(WINDOW_WIDTH//2, 300))
+        self.screen.blit(hint_text, hint_rect)
+        
+        # 确认按钮
+        confirm_button = pygame.Rect(WINDOW_WIDTH//2 - 100, 320, 80, 40)
+        pygame.draw.rect(self.screen, GREEN, confirm_button)
+        pygame.draw.rect(self.screen, BLACK, confirm_button, 2)
+        confirm_text = self.font.render("确认", True, BLACK)
+        confirm_rect = confirm_text.get_rect(center=confirm_button.center)
+        self.screen.blit(confirm_text, confirm_rect)
+        
+        # 取消按钮
+        cancel_button = pygame.Rect(WINDOW_WIDTH//2 + 20, 320, 80, 40)
+        pygame.draw.rect(self.screen, GRAY, cancel_button)
+        pygame.draw.rect(self.screen, BLACK, cancel_button, 2)
+        cancel_text = self.font.render("取消", True, BLACK)
+        cancel_rect = cancel_text.get_rect(center=cancel_button.center)
+        self.screen.blit(cancel_text, cancel_rect)
+        
+        # 错误消息
+        if self.nickname_error_message:
+            error_text = self.small_font.render(self.nickname_error_message, True, RED)
+            error_rect = error_text.get_rect(center=(WINDOW_WIDTH//2, 370))
+            self.screen.blit(error_text, error_rect)
+    
+    def cancel_server_connection(self):
+        """取消服务器连接"""
+        self.connection_cancelled = True
+        self.connecting_to_server = False
+        self.room_state = "menu"
+        self.error_message = ""
+        
+        # 清理网络客户端
+        if self.network_client:
+            self.network_client.disconnect()
+            self.network_client = None
     
     def run(self):
         """运行游戏主循环"""

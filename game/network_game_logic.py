@@ -5,6 +5,7 @@
 
 from .game_logic import GameLogic
 from models.player import Player
+from network.protocol import MessageType, NetworkMessage
 
 class NetworkGameLogic(GameLogic):
     """网络游戏逻辑类"""
@@ -59,7 +60,11 @@ class NetworkGameLogic(GameLogic):
     def should_ai_act_locally(self):
         """判断AI是否应该在本地执行操作"""
         # 只有房主才执行AI操作
-        return self.is_host()
+        if self.is_host():
+            # 房主判断当前回合是否是AI
+            current_player = self.get_current_player()
+            return current_player.is_ai
+        return False
     
     def handle_network_dice_roll(self, player_slot, dice_result):
         """处理网络骰子投掷"""
@@ -117,4 +122,19 @@ class NetworkGameLogic(GameLogic):
             'current_player': self.current_player,
             'game_over': self.game_over,
             'winner': self.players.index(self.winner) if self.winner else None
-        } 
+        }
+
+    def next_turn(self):
+        """切换到下一个玩家"""
+        super().next_turn()  # 调用父类的next_turn来切换current_player
+
+        # 在网络模式下，如果轮到AI玩家且本地是房主，通知服务器
+        if self.network_client and self.is_host():
+            current_player_obj = self.get_current_player()
+            if current_player_obj.is_ai:
+                # 发送消息给服务器，指示AI回合开始
+                ai_turn_msg = NetworkMessage(MessageType.AI_TURN_START, {
+                    'player_slot': current_player_obj.id
+                })
+                self.network_client.send_message(ai_turn_msg)
+                print(f"房主客户端：AI{current_player_obj.id + 1}的回合，发送AI_TURN_START消息") 

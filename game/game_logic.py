@@ -87,24 +87,24 @@ class GameLogic:
         投掷效果骰子并处理效果
         
         Returns:
-            str: 效果执行结果消息
+            int: 骰子结果
         """
         # 如果没有效果类型，直接返回
         if not self.effect_type:
-            return ""
+            return 0
         
         # 投第二次骰子决定金币变化
         self.effect_dice_result = self.roll_dice()
         
         # 执行效果
         current_player = self.get_current_player()
-        result_message = self.execute_effect(self.effect_type, current_player)
+        self.execute_effect(self.effect_type, current_player)
         
         # 清除等待状态和效果类型
         self.waiting_for_effect_dice = False
         self.effect_type = ""
         
-        return result_message
+        return self.effect_dice_result
     
     def execute_effect(self, effect_type, player):
         """
