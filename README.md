@@ -45,25 +45,7 @@ Click “Single Player” to begin.
 ## Project Structure
 
 ```
-miniGame/
-├── main.py                  # Main game program
-├── start_server.py          # Game server launcher
-├── test_multiplayer.py      # Multiplayer test script
-├── game/                    # Game logic
-│   ├── board.py             # Board definition
-│   ├── game_logic.py        # Core game rules
-│   └── network_game_logic.py # Networked game logic
-├── models/                  # Data models
-│   ├── player.py            # Player class
-│   ├── cell.py              # Cell class
-│   └── constants.py         # Game constants
-├── network/                 # Networking components
-│   ├── client.py            # Game client
-│   ├── server.py            # Game server
-│   └── protocol.py          # Network protocol definitions
-└── ui/                      # User interface
-    ├── renderer.py          # Rendering engine
-    └── animations.py        # Animation manager
+Game outdated!
 ```
 
 ## Multiplayer Details
