@@ -22,6 +22,8 @@ class Player:
         self.position = home_positions[player_id]
         self.is_ai = is_ai
         self.color = PLAYER_COLORS[player_id]
+        self.network_id = None  # 网络游戏中的玩家ID
+        self.name = f"玩家{player_id + 1}" if not is_ai else f"AI{player_id + 1}"
         
     def move(self, steps):
         """

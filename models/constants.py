@@ -55,4 +55,8 @@ HOME_COLORS = [RED, PURPLE, BRIGHT_GREEN, ORANGE]
 # 游戏状态
 GAME_STATE_START = "start"
 GAME_STATE_PLAYING = "playing"
-GAME_STATE_RESULTS = "results" 
+GAME_STATE_RESULTS = "results"
+GAME_STATE_LOBBY = "lobby"
+
+# 游戏版本号
+GAME_VERSION = "1.0.0" 
