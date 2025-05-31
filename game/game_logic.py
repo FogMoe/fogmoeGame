@@ -129,6 +129,9 @@ class GameLogic:
     def next_turn(self):
         """切换到下一个玩家"""
         if not self.game_over:
+            # 清除上一个玩家的骰子结果
+            self.clear_dice_results()
+            
             self.current_player = (self.current_player + 1) % 4
             self.waiting_for_click = False
             
